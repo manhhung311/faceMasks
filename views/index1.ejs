@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+  <script async src="https://docs.opencv.org/master/opencv.js" type="text/javascript"></script>
+  <script src="https://docs.opencv.org/master/utils.js " type="text/javascript"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.14.0/dist/tf.min.js"></script>
+
+<script type='text/javascript'>
+var netDet = undefined;
+
+//! Run face detection model
+function detectFaces(img) {
+  var blob = cv.blobFromImage(img, 1, {width: 192, height: 144}, [104, 117, 123, 0], false, false);
+  netDet.setInput(blob);
+  var out = netDet.forward();
+
+  var faces = [];
+  for (var i = 0, n = out.data32F.length; i < n; i += 7) {
+    var confidence = out.data32F[i + 2];
+    var left = out.data32F[i + 3] * img.cols;
+    var top = out.data32F[i + 4] * img.rows;
+    var right = out.data32F[i + 5] * img.cols;
+    var bottom = out.data32F[i + 6] * img.rows;
+    left = Math.min(Math.max(0, left), img.cols - 1);
+    right = Math.min(Math.max(0, right), img.cols - 1);
+    bottom = Math.min(Math.max(0, bottom), img.rows - 1);
+    top = Math.min(Math.max(0, top), img.rows - 1);
+
+    if (confidence > 0.5 && left < right && top < bottom) {
+      faces.push({x: left, y: top, width: right - left, height: bottom - top})
+    }
+  }
+  blob.delete();
+  out.delete();
+  return faces;
+};
+//! Run face detection model
+
+function recognize(result) {
+
+  var bestMatchName = 'Khong khau trang';
+  result.print();
+  if(result.dataSync()[0] < 0.4) {
+  //if(result[0][0] == 0) {
+    bestMatchName = "co khau trang"
+  //}
+  }
+  return bestMatchName;
+};
+//! [Recognize]
+
+async function loadModels(callback) {
+  var utils = new Utils('');
+  var proto = 'https://raw.githubusercontent.com/opencv/opencv/4.x/samples/dnn/face_detector/deploy_lowres.prototxt';
+  var weights = './modelmask/res10_300x300_ssd_iter_140000_fp16.caffemodel';
+  model = await tf.loadLayersModel('./modelmask/model.json');
+  modelface = await tf.loadLayersModel('./modelface/model.json')
+  utils.createFileFromUrl('face_detector.prototxt', proto, () => {
+    document.getElementById('status').innerHTML = 'Downloading face_detector.caffemodel';
+    utils.createFileFromUrl('face_detector.caffemodel', weights, () => {
+      document.getElementById('status').innerHTML = 'Downloading OpenFace model';
+        netDet = cv.readNetFromCaffe('face_detector.prototxt', 'face_detector.caffemodel');
+        document.getElementById('status').innerHTML = '';
+        callback();
+    });
+  });
+};
+
+function main() {
+  // Create a camera object.
+  var output = document.getElementById('output');
+  var camera = document.createElement("video");
+  camera.setAttribute("width", output.width);
+  camera.setAttribute("height", output.height);
+
+  // Get a permission from user to use a camera.
+  navigator.mediaDevices.getUserMedia({video: true, audio: false})
+    .then(function(stream) {
+      camera.srcObject = stream;
+      camera.onloadedmetadata = function(e) {
+        camera.play();
+      };
+  });
+
+  //! [Open a camera stream]
+  var cap = new cv.VideoCapture(camera);
+  var frame = new cv.Mat(camera.height, camera.width, cv.CV_8UC4);
+  var frameBGR = new cv.Mat(camera.height, camera.width, cv.CV_8UC3);
+  var xmlhttp = new XMLHttpRequest();
+        var url = "./modelface/label.txt";
+        let label  = [];
+        xmlhttp.onreadystatechange = function() {
+            if (this.readyState == 4 && this.status == 200) {
+                label = this.responseText.split('\n');
+            }
+        };
+        xmlhttp.open("GET", url, true);
+        xmlhttp.send();
+    
+  //! [Open a camera stream]
+
+  //! [Define frames processing]
+  var isRunning = false;
+  const FPS = 30;  // Target number of frames processed per second.
+  function captureFrame() {
+    //var begin = Date.now();
+    cap.read(frame);  // Read a frame from camera
+    cv.cvtColor(frame, frameBGR, cv.COLOR_RGBA2BGR);
+    var faces = detectFaces(frameBGR);
+    cv.imshow(output, frame);
+    faces.forEach(function(rect) {
+      cv.rectangle(frame, {x: rect.x, y: rect.y}, {x: rect.x + rect.width, y: rect.y + rect.height}, [0, 255, 0, 255]);
+      var face = frameBGR.roi(rect);
+      var faceResized = new cv.Mat(224, 224, cv.CV_8UC3);
+      cv.resize(face, faceResized, {width: 224, height: 224});
+      cv.cvtColor(faceResized, faceResized, cv.COLOR_BGR2RGB);
+      let tensor = tf.tensor(faceResized.data,[224,224,3]);
+      tensor = tf.expandDims(tensor,0);
+      let result = model.predict(tensor)
+      let resultface = modelface.predict(tensor);
+      faceResized.delete();
+      var name = recognize(result);
+      let numberFace = resultface.as1D().argMax().dataSync()
+      cv.putText(frame, name, {x: rect.x, y: rect.y}, cv.FONT_HERSHEY_SIMPLEX, 1.0, [0, 255, 0, 255]);
+      document.getElementById("name").innerHTML = `<p>`+label[numberFace]+` </p>`;
+    });
+    cv.imshow(output, frame);
+    // Loop this function.
+    if (isRunning) {
+      // var delay = 0 /// FPS - (Date.now() - begin);
+      setTimeout(captureFrame, 0);
+      //captureFrame();
+    }
+  };
+  //! [Define frames processing]
+
+  document.getElementById('startStopButton').onclick = function toggle() {
+    if (isRunning) {
+      isRunning = false;
+      document.getElementById('startStopButton').innerHTML = 'Start';
+      //document.getElementById('addPersonButton').disabled = true;
+    } else {
+      function run() {
+        isRunning = true;
+        captureFrame();
+        document.getElementById('startStopButton').innerHTML = 'Stop';
+        document.getElementById('startStopButton').disabled = false;
+      }
+      if (netDet == undefined) {
+        document.getElementById('startStopButton').disabled = true;
+        loadModels(run);  // Load models and run a pipeline;
+      } else {
+        run();
+      }
+    }
+  };
+
+  document.getElementById('startStopButton').disabled = false;
+};
+</script>
+
+</head>
+
+<body onload="cv['onRuntimeInitialized']=()=>{ main() }">
+  <button id="startStopButton" type="button" disabled="true">Start</button>
+  <div id="status"></div>
+  <canvas id="output" width=640 height=480 style="max-width: 100%"></canvas>
+  <div id="name">
+
+  </div>
+</body>
+
+</html>
